@@ -1,13 +1,13 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
 import { getFirestore, doc, collection, getDoc, getDocs, onSnapshot, runTransaction, serverTimestamp, query, limit } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
-import { pad, numberId, whatsappNumber, safeImage, entryData, chooseNumber } from './domain.js';
+import { pad, numberId, MAX_NUMBERS, campaignSize, campaignData, whatsappNumber, safeImage, entryData, chooseNumber } from './domain.js';
 
 const $ = id => document.getElementById(id);
 const show = (id, yes) => $(id).classList.toggle('hidden', !yes);
 const text = (id, value) => { $(id).textContent = value; };
 const statuses = { pending: 'Em revisão', confirmed: 'Resgatado', rejected: 'Recusado / liberado' };
-const base = { title: 'Legendários Vale do Teles Pires', prize: 'Prêmio a definir', description: 'O organizador está preparando as informações desta campanha.', image: '', drawAt: '', rules: 'Participação gratuita. Um número por conta Google. A participação depende da confirmação do organizador. Somente números confirmados entram no sorteio. Nenhum pagamento é necessário. O contemplado será contatado pelos dados informados no cadastro.', whatsapp: '', isOpen: false, winner: '' };
+const base = { title: 'Legendários Vale do Teles Pires', prize: 'Prêmio a definir', description: 'O organizador está preparando as informações desta campanha.', image: '', drawAt: '', rules: 'Participação gratuita. Um número por conta Google. A participação depende da confirmação do organizador. Somente números confirmados entram no sorteio. Nenhum pagamento é necessário. O contemplado será contatado pelos dados informados no cadastro.', whatsapp: '', isOpen: false, winner: '', totalNumbers: 100, highestIssued: 0 };
 const app = initializeApp(window.LEGENDARIOS_FIREBASE);
 const auth = getAuth(app), db = getFirestore(app), campaignRef = doc(db, 'public', 'campaign');
 const provider = new GoogleAuthProvider(); provider.setCustomParameters({ prompt: 'select_account' });
@@ -43,6 +43,11 @@ function renderCampaign() {
   document.querySelectorAll('.campaign-title').forEach(el => el.textContent = campaign.title);
   text('campaignSummary', campaign.winner ? 'Sorteio concluído. Consulte o resultado abaixo.' : openNow() ? 'Escolha gratuitamente e aguarde a confirmação do organizador.' : 'Inscrições em preparação ou encerradas. Consulte a descrição.');
   text('campaignBadge', campaign.winner ? 'Sorteio concluído' : openNow() ? 'Inscrições abertas · R$ 0,00' : 'Inscrições fechadas');
+  text('campaignSizeLabel', `UMA CAMPANHA. ${campaign.totalNumbers} NÚMEROS.`);
+  text('footerNumbers', `${campaign.totalNumbers} números · Participação gratuita · Confirmação manual`);
+  $('manualNumber').max = campaign.totalNumbers; text('manualNumberLabel', `Número de 1 a ${campaign.totalNumbers} *`);
+  $('editTotalNumbers').disabled = !!campaign.winner;
+  text('quantityHint', campaign.winner ? 'Quantidade bloqueada: sorteio concluído.' : `De 1 a ${MAX_NUMBERS}. Mínimo permitido: ${Math.max(1,campaign.highestIssued)}, para preservar os números já solicitados, inclusive os liberados.`);
   text('prizeTitle', campaign.prize); text('descriptionText', campaign.description); text('rulesText', campaign.rules); text('dateText', 'Sorteio: ' + dateText(campaign.drawAt));
   let image = ''; try { image = safeImage(campaign.image); } catch {}
   $('prizeImage').src = image || ''; show('prizeImage', !!image);
@@ -55,6 +60,7 @@ function renderCampaign() {
   renderGrid(); renderIdentity(); renderRows();
 }
 function fillEditor() {
+  $('editTotalNumbers').value = campaign.totalNumbers;
   $('editTitle').value = campaign.title; $('editPrize').value = campaign.prize; $('editDescription').value = campaign.description; $('editRules').value = campaign.rules; $('editWhatsapp').value = campaign.whatsapp; $('editOpen').checked = campaign.isOpen;
   photo = campaign.image.startsWith('data:') ? campaign.image : ''; $('editImage').value = photo ? '' : campaign.image;
   $('editDate').value = campaign.drawAt ? new Date(new Date(campaign.drawAt).getTime() - new Date(campaign.drawAt).getTimezoneOffset()*60000).toISOString().slice(0,16) : '';
@@ -63,13 +69,13 @@ function fillEditor() {
 }
 $('timezoneLabel').textContent = 'Preencha no horário do seu dispositivo: ' + Intl.DateTimeFormat().resolvedOptions().timeZone + '. A página pública exibe o horário de Cuiabá.';
 function renderGrid() {
-  if (selected && tickets.has(selected)) selected = null;
+  if (selected && (tickets.has(selected) || Number(selected) > campaign.totalNumbers)) selected = null;
   const confirmed = [...tickets.values()].filter(t => t.status === 'confirmed').length;
   const pending = [...tickets.values()].filter(t => t.status === 'pending').length;
-  text('countConfirmed', connected ? confirmed : '—'); text('countPending', connected ? pending : '—'); text('countAvailable', connected ? 100-tickets.size : '—');
-  text('adminCounts', `${confirmed} resgatados · ${pending} em revisão · ${100-tickets.size} disponíveis`);
+  text('countConfirmed', connected ? confirmed : '—'); text('countPending', connected ? pending : '—'); text('countAvailable', connected ? campaign.totalNumbers-tickets.size : '—');
+  text('adminCounts', `${confirmed} resgatados · ${pending} em revisão · ${campaign.totalNumbers-tickets.size} disponíveis`);
   $('numberGrid').replaceChildren();
-  for (let i=1;i<=100;i++) {
+  for (let i=1;i<=campaign.totalNumbers;i++) {
     const id=pad(i), occupied=tickets.get(id), b=document.createElement('button'); b.type='button'; b.className='number '+(occupied?.status || '')+(selected === id?' selected':''); b.textContent=id;
     b.disabled=busy || !openNow() || !!occupied || !!(ownEntry && ownEntry.status!=='rejected');
     b.setAttribute('aria-label', `Número ${id}, ${occupied ? statuses[occupied.status] : 'disponível'}`); b.setAttribute('aria-pressed', String(selected === id));
@@ -88,8 +94,8 @@ function renderIdentity() {
 }
 function connectPublic() {
   campaignStop?.(); numbersStop?.();
-  campaignStop=onSnapshot(campaignRef, snap=>{campaignExists=snap.exists();campaign={...base,...(snap.data()||{})};connected=true;feedback('globalStatus', campaignExists ? '' : 'O ADM precisa salvar a descrição e abrir as inscrições antes de receber participantes.');renderCampaign();}, e=>{connected=false;feedback('globalStatus',errorMessage(e),true);renderGrid();});
-  numbersStop=onSnapshot(query(collection(db,'numbers'),limit(100)), snap=>{tickets=new Map(snap.docs.map(d=>[d.id,d.data()]));renderCampaign();},e=>{connected=false;feedback('globalStatus',errorMessage(e),true);renderGrid();});
+  campaignStop=onSnapshot(campaignRef, snap=>{campaignExists=snap.exists();campaign={...base,...campaignData(snap.data())};connected=true;feedback('globalStatus', campaignExists ? '' : 'O ADM precisa salvar a descrição e abrir as inscrições antes de receber participantes.');renderCampaign();}, e=>{connected=false;feedback('globalStatus',errorMessage(e),true);renderGrid();});
+  numbersStop=onSnapshot(query(collection(db,'numbers'),limit(MAX_NUMBERS)), snap=>{tickets=new Map(snap.docs.map(d=>[d.id,d.data()]));renderCampaign();},e=>{connected=false;feedback('globalStatus',errorMessage(e),true);renderGrid();});
 }
 async function login(button) {
   button.disabled=true;feedback('globalStatus','Abrindo acesso Google…');
@@ -108,15 +114,17 @@ async function reserve(e,id,confirmed=false) {
   await runTransaction(db,async tx=>{
     const [cs,ts,rs]=await Promise.all([tx.get(campaignRef),tx.get(t),tx.get(r)]);
     if(!cs.exists()||!cs.data().isOpen||cs.data().winner)throw new Error('As inscrições estão fechadas.');
+    const current=campaignData(cs.data()); numberId(e.number,current.totalNumbers);
     if(ts.exists())throw new Error('Este número acabou de ser solicitado por outra pessoa. Escolha outro.');
     if(rs.exists()&&rs.data().status!=='rejected')throw new Error('Esta conta já tem uma solicitação.');
     const status=confirmed?'confirmed':'pending';
     tx.set(r,{...e,status,createdAt:serverTimestamp()});tx.set(t,{status,claim:id});
+    if(Number(e.number)>current.highestIssued)tx.update(campaignRef,{highestIssued:Number(e.number)});
   });
 }
 $('entryForm').onsubmit=e=>{e.preventDefault();run($('reserveButton'),'entryStatus',async()=>{
   if(!user?.emailVerified)throw new Error('Entre com sua conta Google.');
-  const p=entryData({name:$('fullName').value,phone:$('phone').value,email:user.email,city:$('city').value,uf:$('uf').value,address:$('address').value,cep:$('cep').value,number:selected});await reserve(p,user.uid);selected=null;feedback('entryStatus','Pedido salvo. Aguarde a confirmação do ADM.');
+  const p=entryData({name:$('fullName').value,phone:$('phone').value,email:user.email,city:$('city').value,uf:$('uf').value,address:$('address').value,cep:$('cep').value,number:selected},campaign.totalNumbers);await reserve(p,user.uid);selected=null;feedback('entryStatus','Pedido salvo. Aguarde a confirmação do ADM.');
 });};
 function renderRows() {
   $('entryRows').replaceChildren(); const filter=$('filterStatus').value;
@@ -142,21 +150,24 @@ async function review(e,status){await run($('refreshAdmin'),'reviewStatus',async
 });}
 $('reviewNo').onclick=()=>{$('reviewDialog').close();pendingAction=null;}; $('reviewDialog').addEventListener('cancel',()=>pendingAction=null);
 $('reviewYes').onclick=()=>{const action=pendingAction;pendingAction=null;$('reviewDialog').close();action?.();};
-$('manualForm').onsubmit=e=>{e.preventDefault();run($('manualSubmit'),'manualStatus',async()=>{if(!admin)throw new Error('Acesso ADM necessário.');const p=entryData({name:$('manualName').value,phone:$('manualPhone').value,email:$('manualEmail').value,city:$('manualCity').value,uf:$('manualUf').value,number:$('manualNumber').value});await reserve(p,'manual-'+crypto.randomUUID(),true);$('manualForm').reset();feedback('manualStatus',`Número ${p.number} confirmado e salvo.`);});};
+$('manualForm').onsubmit=e=>{e.preventDefault();run($('manualSubmit'),'manualStatus',async()=>{if(!admin)throw new Error('Acesso ADM necessário.');const p=entryData({name:$('manualName').value,phone:$('manualPhone').value,email:$('manualEmail').value,city:$('manualCity').value,uf:$('manualUf').value,number:$('manualNumber').value},campaign.totalNumbers);await reserve(p,'manual-'+crypto.randomUUID(),true);$('manualForm').reset();feedback('manualStatus',`Número ${p.number} confirmado e salvo.`);});};
 $('photoFile').onchange=async()=>{const f=$('photoFile').files[0];if(!f)return;try{if(!['image/jpeg','image/png','image/webp'].includes(f.type)||f.size>450*1024)throw new Error('Escolha JPG, PNG ou WebP de até 450 KB.');photo=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('Não foi possível ler a foto.'));reader.readAsDataURL(f);});photo=safeImage(photo);$('editImage').value='';$('photoPreview').src=photo;show('photoPreview',true);feedback('saveStatus','Foto pronta. Clique em Salvar para publicar.');}catch(e){feedback('saveStatus',errorMessage(e),true);$('photoFile').value='';}};
 $('editImage').oninput=()=>{if($('editImage').value.trim())photo='';}; $('removePhoto').onclick=()=>{photo='';$('photoFile').value='';$('editImage').value='';show('photoPreview',false);};
 $('campaignForm').onsubmit=e=>{e.preventDefault();run($('saveCampaign'),'saveStatus',async()=>{
-  if(!admin)throw new Error('Acesso ADM necessário.');const c={title:$('editTitle').value.trim(),prize:$('editPrize').value.trim(),description:$('editDescription').value.trim(),image:safeImage($('editImage').value.trim()||photo),drawAt:$('editDate').value?new Date($('editDate').value).toISOString():'',rules:$('editRules').value.trim(),whatsapp:whatsappNumber($('editWhatsapp').value),isOpen:$('editOpen').checked,winner:campaign.winner||''};
+  if(!admin)throw new Error('Acesso ADM necessário.');const c={totalNumbers:campaignSize($('editTotalNumbers').value),title:$('editTitle').value.trim(),prize:$('editPrize').value.trim(),description:$('editDescription').value.trim(),image:safeImage($('editImage').value.trim()||photo),drawAt:$('editDate').value?new Date($('editDate').value).toISOString():'',rules:$('editRules').value.trim(),whatsapp:whatsappNumber($('editWhatsapp').value),isOpen:$('editOpen').checked,winner:campaign.winner||''};
   if(c.title.length<3||c.prize.length<3||!c.description||!c.rules)throw new Error('Preencha nome, prêmio, descrição e regras.');
   if(c.winner&&c.isOpen)throw new Error('Um sorteio concluído não permite reabrir inscrições.');
-  await runTransaction(db,async tx=>{const s=await tx.get(campaignRef);if((s.data()?.updatedAt?.toMillis?.()||0)!==editVersion)throw new Error('A descrição mudou em outra sessão. Atualize o painel antes de salvar.');tx.set(campaignRef,{...c,updatedAt:serverTimestamp()});});
+  await runTransaction(db,async tx=>{const s=await tx.get(campaignRef);if((s.data()?.updatedAt?.toMillis?.()||0)!==editVersion)throw new Error('A descrição mudou em outra sessão. Atualize o painel antes de salvar.');const current=campaignData(s.data());
+    if(c.totalNumbers<current.highestIssued)throw new Error(`A quantidade não pode ser menor que ${current.highestIssued}: este número já foi solicitado. Nenhum cadastro foi alterado.`);
+    if(s.data()?.winner&&c.totalNumbers!==current.totalNumbers)throw new Error('A quantidade fica bloqueada após o sorteio.');
+    tx.set(campaignRef,{...c,highestIssued:current.highestIssued,updatedAt:serverTimestamp()});});
   // Aguarde a leitura do registro confirmado antes de repor os campos do editor.
   // O aviso de sucesso pode chegar antes do evento do listener em tempo real.
   const saved=await getDoc(campaignRef);
-  campaignExists=saved.exists();campaign={...base,...(saved.data()||{})};
+  campaignExists=saved.exists();campaign={...base,...campaignData(saved.data())};
   editVersion=null;fillEditor();feedback('saveStatus','Descrição e configurações publicadas com sucesso.');
 });};
-async function refreshAll(){await run($('refresh'),'globalStatus',async()=>{const [c,t]=await Promise.all([getDoc(campaignRef),getDocs(query(collection(db,'numbers'),limit(100)))]);campaignExists=c.exists();campaign={...base,...(c.data()||{})};tickets=new Map(t.docs.map(d=>[d.id,d.data()]));connected=true;editVersion=null;if(admin)fillEditor();renderCampaign();feedback('globalStatus',campaignExists?'Disponibilidade atualizada.':'Entre na Área ADM para configurar a campanha.');});}
+async function refreshAll(){await run($('refresh'),'globalStatus',async()=>{const [c,t]=await Promise.all([getDoc(campaignRef),getDocs(query(collection(db,'numbers'),limit(MAX_NUMBERS)))]);campaignExists=c.exists();campaign={...base,...campaignData(c.data())};tickets=new Map(t.docs.map(d=>[d.id,d.data()]));connected=true;editVersion=null;if(admin)fillEditor();renderCampaign();feedback('globalStatus',campaignExists?'Disponibilidade atualizada.':'Entre na Área ADM para configurar a campanha.');});}
 $('refresh').onclick=refreshAll;$('refreshAdmin').onclick=refreshAll;
 function whatsapp(message){try{const n=whatsappNumber(campaign.whatsapp);if(n)window.open('https://wa.me/'+n+'?text='+encodeURIComponent(message),'_blank','noopener,noreferrer');}catch(e){feedback('globalStatus',errorMessage(e),true);}}
 $('contactOrganizer').onclick=()=>whatsapp(`Olá! Gostaria de informações sobre ${campaign.title}.`);$('myWhatsapp').onclick=()=>whatsapp(`Olá! Sou ${ownEntry?.name}. Meu pedido de participação gratuita em ${campaign.title} é o número ${ownEntry?.number}. Gostaria de falar sobre meu cadastro.`);
@@ -164,7 +175,7 @@ $('drawButton').onclick=()=>{pendingAction=draw;text('reviewTitle','Encerrar e s
 async function draw(){await run($('drawButton'),'drawStatus',async()=>{
   if(!admin)throw new Error('Acesso ADM necessário.');if(campaign.drawAt&&Date.now()<Date.parse(campaign.drawAt))throw new Error('Aguarde a data e o horário programados.');
   const snapshot=await getDocs(collection(db,'numbers')),candidates=snapshot.docs.filter(d=>d.data().status==='confirmed').map(d=>d.id).sort();const winner=chooseNumber(candidates);
-  await runTransaction(db,async tx=>{const c=await tx.get(campaignRef);const all=await Promise.all(Array.from({length:100},(_,i)=>tx.get(doc(db,'numbers',pad(i+1)))));if(!c.data()?.isOpen||c.data()?.winner)throw new Error('Inscrições encerradas ou sorteio já realizado.');if(c.data().drawAt&&Date.now()<Date.parse(c.data().drawAt))throw new Error('Aguarde o horário programado.');const now=all.filter(s=>s.exists()&&s.data().status==='confirmed').map(s=>s.id).sort();if(JSON.stringify(now)!==JSON.stringify(candidates))throw new Error('A lista de números mudou. Atualize e inicie o sorteio novamente.');tx.update(campaignRef,{winner,isOpen:false,updatedAt:serverTimestamp()});});feedback('drawStatus',`Resultado registrado: número ${winner}.`);
+  await runTransaction(db,async tx=>{const c=await tx.get(campaignRef);const all=await Promise.all(Array.from({length:campaignData(c.data()).totalNumbers},(_,i)=>tx.get(doc(db,'numbers',pad(i+1)))));if(!c.data()?.isOpen||c.data()?.winner)throw new Error('Inscrições encerradas ou sorteio já realizado.');if(c.data().drawAt&&Date.now()<Date.parse(c.data().drawAt))throw new Error('Aguarde o horário programado.');const now=all.filter(s=>s.exists()&&s.data().status==='confirmed').map(s=>s.id).sort();if(JSON.stringify(now)!==JSON.stringify(candidates))throw new Error('A lista de números mudou. Atualize e inicie o sorteio novamente.');tx.update(campaignRef,{winner,isOpen:false,totalNumbers:campaignData(c.data()).totalNumbers,highestIssued:campaignData(c.data()).highestIssued,updatedAt:serverTimestamp()});});feedback('drawStatus',`Resultado registrado: número ${winner}.`);
 });}
 $('exportPrivate').onclick=()=>{if(!admin)return;const data=JSON.stringify({exportedAt:new Date().toISOString(),campaign,entries},null,2);const a=document.createElement('a'),url=URL.createObjectURL(new Blob([data],{type:'application/json'}));a.href=url;a.download='backup-PRIVADO-participantes-'+new Date().toISOString().slice(0,10)+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);feedback('reviewStatus','Backup privado baixado. Guarde em local protegido e não envie ao repositório público do GitHub.');};
 window.addEventListener('hashchange',()=>setPage(location.hash.slice(1)));

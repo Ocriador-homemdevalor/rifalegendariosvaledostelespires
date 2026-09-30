@@ -1,8 +1,17 @@
 export const pad = n => String(n).padStart(3, '0');
 export const digits = value => String(value || '').replace(/\D/g, '');
-export function numberId(value) {
+export const MAX_NUMBERS = 1000;
+export function campaignSize(value) {
   const n = Number(value);
-  if (!Number.isInteger(n) || n < 1 || n > 100) throw new Error('Escolha um número de 1 a 100.');
+  if (!Number.isInteger(n) || n < 1 || n > MAX_NUMBERS) throw new Error(`Informe uma quantidade inteira de 1 a ${MAX_NUMBERS}.`);
+  return n;
+}
+export function campaignData(data) {
+  return { ...data, totalNumbers: campaignSize(data?.totalNumbers ?? 100), highestIssued: data ? (data.highestIssued ?? 100) : 0 };
+}
+export function numberId(value, totalNumbers = MAX_NUMBERS) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1 || n > campaignSize(totalNumbers)) throw new Error(`Escolha um número de 1 a ${totalNumbers}.`);
   return pad(n);
 }
 export function whatsappNumber(value) {
@@ -19,8 +28,8 @@ export function safeImage(value) {
   try { const u = new URL(url); if (u.protocol === 'https:' && !u.username && !u.password && url.length <= 2000) return url; } catch {}
   throw new Error('Use uma foto JPG, PNG ou WebP, ou um endereço HTTPS válido.');
 }
-export function entryData(raw) {
-  const e = { name: String(raw.name || '').trim(), phone: digits(raw.phone), email: String(raw.email || '').trim(), city: String(raw.city || '').trim(), uf: String(raw.uf || '').trim().toUpperCase(), address: String(raw.address || '').trim(), cep: String(raw.cep || '').trim(), number: numberId(raw.number) };
+export function entryData(raw, totalNumbers = MAX_NUMBERS) {
+  const e = { name: String(raw.name || '').trim(), phone: digits(raw.phone), email: String(raw.email || '').trim(), city: String(raw.city || '').trim(), uf: String(raw.uf || '').trim().toUpperCase(), address: String(raw.address || '').trim(), cep: String(raw.cep || '').trim(), number: numberId(raw.number, totalNumbers) };
   if (e.name.length < 3 || e.name.length > 100) throw new Error('Preencha o nome completo.');
   if (!/^[0-9]{10,13}$/.test(e.phone)) throw new Error('Preencha o telefone com DDD.');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.email) || e.email.length > 150) throw new Error('Informe um e-mail válido.');
